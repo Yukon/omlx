@@ -1863,9 +1863,11 @@ async def create_chat_completion(
         )
     elif is_vlm:
         # VLM: preserve image_url content parts for vision processing
+        logger.debug("Getting messages")
         messages = extract_multimodal_content(
             request.messages, max_tool_result_tokens, engine.tokenizer
         )
+        logger.debug("Got messages")
     else:
         messages = extract_text_content(
             request.messages, max_tool_result_tokens, engine.tokenizer

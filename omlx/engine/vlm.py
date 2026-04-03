@@ -404,6 +404,18 @@ class VLMBatchedEngine(BaseEngine):
 
         logger.info(f"VLM tool calling enabled: parser={tool_parser_type}")
 
+    def _get_tool_stop_sequences(self) -> list[str]:
+        """Return stop sequences for tool calling if enabled.
+
+        For Gemma4 and other formats with tool_call_end markers,
+        adds the end marker as a stop sequence to prevent generation
+        beyond the tool call block.
+        """
+        stop_seqs: list[str] = []
+        if getattr(self._tokenizer, "tool_call_end", None):
+            stop_seqs.append(self._tokenizer.tool_call_end)
+        return stop_seqs
+
     @staticmethod
     def _count_content_parts(content: Any, part_types: set[str]) -> int:
         """Count multimodal parts in list content by type."""
@@ -703,6 +715,12 @@ class VLMBatchedEngine(BaseEngine):
         if self.is_ocr_model:
             extra_stop_ids = self._resolve_ocr_stop_token_ids()
 
+        # Add tool call end marker as stop sequence if tool calling is enabled
+        tool_stop_seqs: list[str] = self._get_tool_stop_sequences()
+        stop_sequences = list(stop) if stop else []
+        if tool_stop_seqs:
+            stop_sequences.extend(tool_stop_seqs)
+
         from ..request import SamplingParams
 
         sampling_params = SamplingParams(
@@ -715,7 +733,7 @@ class VLMBatchedEngine(BaseEngine):
             xtc_threshold=kwargs.get("xtc_threshold", 0.1),
             repetition_penalty=repetition_penalty,
             presence_penalty=presence_penalty,
-            stop=stop or [],
+            stop=stop_sequences,
             stop_token_ids=extra_stop_ids or None,
             thinking_budget=kwargs.get("thinking_budget", None),
             compiled_grammar=kwargs.get("compiled_grammar", None),
@@ -768,6 +786,12 @@ class VLMBatchedEngine(BaseEngine):
         if self.is_ocr_model:
             extra_stop_ids = self._resolve_ocr_stop_token_ids()
 
+        # Add tool call end marker as stop sequence if tool calling is enabled
+        tool_stop_seqs: list[str] = self._get_tool_stop_sequences()
+        stop_sequences = list(stop) if stop else []
+        if tool_stop_seqs:
+            stop_sequences.extend(tool_stop_seqs)
+
         from ..request import SamplingParams
 
         sampling_params = SamplingParams(
@@ -780,7 +804,7 @@ class VLMBatchedEngine(BaseEngine):
             xtc_threshold=kwargs.get("xtc_threshold", 0.1),
             repetition_penalty=repetition_penalty,
             presence_penalty=presence_penalty,
-            stop=stop or [],
+            stop=stop_sequences,
             stop_token_ids=extra_stop_ids or None,
             thinking_budget=kwargs.get("thinking_budget", None),
             compiled_grammar=kwargs.get("compiled_grammar", None),

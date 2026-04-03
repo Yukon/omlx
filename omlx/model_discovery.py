@@ -71,7 +71,7 @@ VLM_ARCHITECTURES = {
     "PaliGemmaForConditionalGeneration",
     "Phi3VForCausalLM",
     "Pixtral",
-    "MolmoForCausalLM",
+    "MolmoForConditionalLM",
     "Florence2ForConditionalGeneration",
 }
 

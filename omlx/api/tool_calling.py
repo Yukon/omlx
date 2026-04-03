@@ -9,6 +9,8 @@ Uses mlx-lm's modular tool parser system to support multiple model formats:
 - glm47: GLM-4.7 format
 - qwen3_coder: Qwen3 Coder XML format
 
+Google Gemma 4 format is supported with custom regex parsing
+
 The tool parser is automatically selected based on the model's chat template.
 
 Also includes structured output (JSON Schema) utilities:
@@ -259,6 +261,110 @@ def _parse_bracket_tool_calls(text: str) -> Tuple[str, Optional[List[ToolCall]]]
     return cleaned, tool_calls
 
 
+def _parse_gemma4_tool_calls(text: str) -> Tuple[str, Optional[List[ToolCall]]]:
+    """
+    Parse Gemma 4 format tool calls.
+
+    Handles the custom regex-based format:
+    - Outer pattern: \<|tool_call\>(.*?)<tool_call\|>
+    - Inner pattern: call:(?P<name>\w+)(?P<arguments>\{.*\})
+
+    Returns:
+        Tuple of (cleaned_text, tool_calls or None)
+    """
+    tool_calls = []
+
+    # Outer pattern to find tool_call blocks
+    outer_pattern = r"<\|tool_call\>(.*?)<tool_call\|>"
+    outer_matches = re.findall(outer_pattern, text, re.DOTALL)
+
+    for match in outer_matches:
+        content = match.strip()
+
+        # Inner pattern to extract function name and arguments block
+        inner_pattern = r"call:(?P<name>\w+)(?P<arguments>\{.*\})"
+        inner_match = re.search(inner_pattern, content, re.DOTALL)
+
+        if inner_match:
+            name = inner_match.group("name")
+            args_block = inner_match.group("arguments")
+
+            # Parse Gemma4 custom format: {key1:<|"|>value1<|"|>,key2:value2}
+            # Remove outer braces
+            args_content = args_block[1:-1] if args_block.startswith("{") and args_block.endswith("}") else args_block
+
+            # Extract key-value pairs, handling <|"|>...<|"|> delimited values
+            arguments = {}
+            remaining = args_content
+
+            while remaining:
+                remaining = remaining.strip()
+                if not remaining:
+                    break
+
+                # Find the key (up to colon)
+                colon_idx = remaining.find(":")
+                if colon_idx == -1:
+                    break
+
+                key = remaining[:colon_idx].strip()
+                remaining = remaining[colon_idx + 1:].strip()
+
+                # Check if value is delimited with <|"|>
+                if remaining.startswith('<|"|>'):
+                    # Find closing <|"|>
+                    end_delim = '<|"|>'
+                    value_start = len('<|"|>')
+                    value_end = remaining.find(end_delim, value_start)
+                    if value_end == -1:
+                        # No closing delimiter, take rest
+                        value = remaining[value_start:]
+                        remaining = ""
+                    else:
+                        value = remaining[value_start:value_end]
+                        remaining = remaining[value_end + len(end_delim):]
+                else:
+                    # Non-delimited value: read until comma or end
+                    comma_idx = remaining.find(",")
+                    if comma_idx == -1:
+                        value = remaining
+                        remaining = ""
+                    else:
+                        value = remaining[:comma_idx]
+                        remaining = remaining[comma_idx + 1:]
+                    # Non-delimited value: read until comma or end
+                    comma_idx = remaining.find(",")
+                    if comma_idx == -1:
+                        value = remaining
+                        remaining = ""
+                    else:
+                        value = remaining[:comma_idx]
+                        remaining = remaining[comma_idx + 1:]
+
+                if key:
+                    arguments[key] = value
+
+                # Skip comma if present
+                if remaining.startswith(","):
+                    remaining = remaining[1:]
+
+            tool_calls.append(
+                ToolCall(
+                    id=f"call_{uuid.uuid4().hex[:8]}",
+                    type="function",
+                    function=FunctionCall(
+                        name=name,
+                        arguments=json.dumps(arguments, ensure_ascii=False),
+                    ),
+                )
+            )
+
+    if not tool_calls:
+        return text, None
+
+    cleaned = re.sub(outer_pattern, "", text, flags=re.DOTALL).strip()
+    return cleaned, tool_calls
+
 def parse_tool_calls(
     text: str,
     tokenizer: Any,
@@ -358,6 +464,10 @@ def parse_tool_calls(
     # Fallback: bracket tool call formats (from text-formatted history)
     if "[Calling tool:" in cleaned_text or "[Tool call:" in cleaned_text:
         return _parse_bracket_tool_calls(cleaned_text)
+
+    # Fallback: Gemma 4 format with custom regex parsing
+    if "<|tool_call>" in cleaned_text:
+        return _parse_gemma4_tool_calls(cleaned_text)
 
     return cleaned_text, None
 
@@ -479,7 +589,7 @@ class ToolCallStreamFilter:
             marker = ""
         if marker_end is None:
             marker_end = ""
-        self._marker_pairs: List[Tuple[str, str]] = [("<tool_call>", "</tool_call>")]
+        self._marker_pairs: List[Tuple[str, str]] = [("<tool_call>", "</tool_call>"), ("<|tool_call>", "<tool_call|>")]
         self._suppress_after_markers: List[str] = []
         if marker:
             if marker_end:
