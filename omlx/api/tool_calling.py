@@ -308,8 +308,10 @@ def _parse_gemma4_tool_calls(text: str) -> Tuple[str, Optional[List[ToolCall]]]:
                     break
 
                 key = remaining[:colon_idx].strip()
+                # Extra safety, remove quotes from key if present
+                if key.startswith('"') and key.endswith('"'):
+                    key = key[1:-1]
                 remaining = remaining[colon_idx + 1:].strip()
-
                 # Check if value is delimited with <|"|>
                 if remaining.startswith('<|"|>'):
                     # Find closing <|"|>
@@ -324,14 +326,6 @@ def _parse_gemma4_tool_calls(text: str) -> Tuple[str, Optional[List[ToolCall]]]:
                         value = remaining[value_start:value_end]
                         remaining = remaining[value_end + len(end_delim):]
                 else:
-                    # Non-delimited value: read until comma or end
-                    comma_idx = remaining.find(",")
-                    if comma_idx == -1:
-                        value = remaining
-                        remaining = ""
-                    else:
-                        value = remaining[:comma_idx]
-                        remaining = remaining[comma_idx + 1:]
                     # Non-delimited value: read until comma or end
                     comma_idx = remaining.find(",")
                     if comma_idx == -1:
