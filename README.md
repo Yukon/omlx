@@ -6,22 +6,19 @@
   </picture>
 </p>
 
-<h1 align="center">oMLX</h1>
+<h1 align="center">oMLX (forked)</h1>
 <p align="center"><b>LLM inference, optimized for your Mac</b><br>Continuous batching and tiered KV caching, managed directly from your menu bar.</p>
 
-<p align="center">
-<a href="https://www.buymeacoffee.com/jundot"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="40"></a>
-</p>
+## Supporting Gemma 4!
+This fork has support for the Gemma 4 models with tool calls and channel thinking parsing. Validated using `Gemma-4-31B-it` with [Pi](https://pi.dev) as the testing harnesses.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License">
-  <img src="https://img.shields.io/badge/python-3.10+-green" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/platform-Apple%20Silicon-black?logo=apple" alt="Apple Silicon">
-</p>
+Validation Testing:
 
-<p align="center">
-  <a href="mailto:junkim.dot@gmail.com">junkim.dot@gmail.com</a> · <a href="https://omlx.ai/me">https://omlx.ai/me</a>
-</p>
+Running `pi --tools read -ne -ns --model gemma-4-31b-it -m "Call read for README.md"`
+
+Current Limitations:
+
+Enabling thinking **with** tools results in some form of generation _coruption_. Been unable to determine why this is ocurring with model generating rambling "// a single tool call" and the like output. During some runs it does generate some sensical output but something is wrong with how message template is applied.
 
 <p align="center">
   <a href="#install">Install</a> ·
@@ -31,13 +28,6 @@
   <a href="#cli-configuration">CLI Configuration</a> ·
   <a href="https://omlx.ai/benchmarks">Benchmarks</a> ·
   <a href="https://omlx.ai">oMLX.ai</a>
-</p>
-
-<p align="center">
-  <b>English</b> ·
-  <a href="README.zh.md">中文</a> ·
-  <a href="README.ko.md">한국어</a> ·
-  <a href="README.ja.md">日本語</a>
 </p>
 
 ---
@@ -52,26 +42,6 @@
 
 ## Install
 
-### macOS App
-
-Download the `.dmg` from [Releases](https://github.com/jundot/omlx/releases), drag to Applications, done. The app includes in-app auto-update, so future upgrades are just one click.
-
-### Homebrew
-
-```bash
-brew tap jundot/omlx https://github.com/jundot/omlx
-brew install omlx
-
-# Upgrade to the latest version
-brew update && brew upgrade omlx
-
-# Run as a background service (auto-restarts on crash)
-brew services start omlx
-
-# Optional: MCP (Model Context Protocol) support
-/opt/homebrew/opt/omlx/libexec/bin/pip install mcp
-```
-
 ### From Source
 
 ```bash
@@ -79,45 +49,10 @@ git clone https://github.com/jundot/omlx.git
 cd omlx
 pip install -e .          # Core only
 pip install -e ".[mcp]"   # With MCP (Model Context Protocol) support
+python -m omlx.cli serve
 ```
 
 Requires macOS 15.0+ (Sequoia), Python 3.10+, and Apple Silicon (M1/M2/M3/M4).
-
-## Quickstart
-
-### macOS App
-
-Launch oMLX from your Applications folder. The Welcome screen guides you through three steps - model directory, server start, and first model download. That's it. To connect OpenClaw, OpenCode, or Codex, see [Integrations](#integrations).
-
-<p align="center">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.36.32.png" alt="oMLX Welcome Screen" width="360">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.34.30.png" alt="oMLX Menubar" width="240">
-</p>
-
-### CLI
-
-```bash
-omlx serve --model-dir ~/models
-```
-
-The server discovers LLMs, VLMs, embedding models, and rerankers from subdirectories automatically. Any OpenAI-compatible client can connect to `http://localhost:8000/v1`. A built-in chat UI is also available at `http://localhost:8000/admin/chat`.
-
-### Homebrew Service
-
-If you installed via Homebrew, you can run oMLX as a managed background service:
-
-```bash
-brew services start omlx    # Start (auto-restarts on crash)
-brew services stop omlx     # Stop
-brew services restart omlx  # Restart
-brew services info omlx     # Check status
-```
-
-The service runs `omlx serve` with zero-config defaults (`~/.omlx/models`, port 8000). To customize, either set environment variables (`OMLX_MODEL_DIR`, `OMLX_PORT`, etc.) or run `omlx serve --model-dir /your/path` once to persist settings to `~/.omlx/settings.json`.
-
-Logs are written to two locations:
-- **Service log**: `$(brew --prefix)/var/log/omlx.log` (stdout/stderr)
-- **Server log**: `~/.omlx/logs/server.log` (structured application log)
 
 ## Features
 
