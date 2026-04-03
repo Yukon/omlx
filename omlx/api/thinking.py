@@ -19,12 +19,20 @@ _CLOSE_TAG = "</think>"
 _OPEN_LEN = len(_OPEN_TAG)   # 7
 _CLOSE_LEN = len(_CLOSE_TAG)  # 8
 
+# Gemma 4 format (channel-based thought markers)
+_GEMMA4_THINK_START = "<|channel>thought\n"
+_GEMMA4_THINK_END = "<channel|>"
+_GEMMA4_THINK_START_LEN = len(_GEMMA4_THINK_START)
+_GEMMA4_THINK_END_LEN = len(_GEMMA4_THINK_END)
+
 # Regex for non-streaming extraction (complete text)
 _THINKING_PATTERN = re.compile(r'<think>(.*?)</think>', re.DOTALL)
 # Handle case where <think> is missing but </think> is present
 # (scheduler prepends <think>\n but the tag may be split)
 _THINKING_TAIL_PATTERN = re.compile(r'^(.*?)</think>', re.DOTALL)
 
+# Regex for Gemma 4 format
+_GEMMA4_THINKING_PATTERN = re.compile(r'<\|channel>thought\n(.*?)<channel\|>', re.DOTALL)
 
 def extract_thinking(text: str) -> Tuple[str, str]:
     """Extract thinking and content from complete text.
@@ -35,6 +43,7 @@ def extract_thinking(text: str) -> Tuple[str, str]:
     - Partial (no open tag): ``reasoning</think>answer`` → ``("reasoning", "answer")``
     - Empty think: ``<think></think>answer`` → ``("", "answer")``
     - Think only: ``<think>reasoning</think>`` → ``("reasoning", "")``
+    - Gemma 4: <|channel>thought\n...<|channel
 
     Args:
         text: Complete model output text.
@@ -45,10 +54,35 @@ def extract_thinking(text: str) -> Tuple[str, str]:
     if not text:
         return ("", "")
 
+    # Auto-detect format if not specified
+    is_gemma4 = (_GEMMA4_THINK_START in text or _GEMMA4_THINK_END in text)
+
+    # Try Gemma 4 format first if detected
+    if is_gemma4:
+        thinking_parts = []
+        remaining = text
+
+        # Extract all <|channel>thought...<channel|> blocks
+        while True:
+            match = _GEMMA4_THINKING_PATTERN.search(remaining)
+            if not match:
+                break
+
+            remaining = remaining[:match.start()] + remaining[match.end():]
+            if match.group(1) is not None:
+                thinking_parts.append(match.group(1))
+
+        if thinking_parts:
+            thinking = "\n".join(thinking_parts).strip()
+            return (thinking, remaining.strip())
+
+        return ("", text)
+
+    # Fall back to standard format
     thinking_parts = []
     remaining = text
 
-    # Extract all <think>...</think> blocks
+    # Extract all  blocks
     while True:
         match = _THINKING_PATTERN.search(remaining)
         if not match:
@@ -69,7 +103,6 @@ def extract_thinking(text: str) -> Tuple[str, str]:
             return (thinking, remaining)
 
     return ("", text)
-
 
 class ThinkingParser:
     """Stateful streaming parser for separating <think>...</think> from content.
@@ -100,6 +133,8 @@ class ThinkingParser:
     def feed(self, text: str) -> Tuple[str, str]:
         """Feed a text chunk, return (thinking_delta, content_delta).
 
+        Handles both standard (</think>) and Gemma 4 (<channel|>) formats.
+
         Args:
             text: New text chunk from model output.
 
@@ -122,13 +157,25 @@ class ThinkingParser:
                 # Check if this could be a tag start
                 remaining = text[i:]
 
-                # Try to match <think>
+                # Try to match Gemma 4 think start first (longer pattern)
+                if remaining.startswith(_GEMMA4_THINK_START):
+                    self._in_thinking = True
+                    i += _GEMMA4_THINK_START_LEN
+                    continue
+
+                # Try to match standard open tag
                 if remaining.startswith(_OPEN_TAG):
                     self._in_thinking = True
                     i += _OPEN_LEN
                     continue
 
-                # Try to match </think>
+                # Try to match close tags
+                if remaining.startswith(_GEMMA4_THINK_END):
+                    self._in_thinking = False
+                    i += _GEMMA4_THINK_END_LEN
+                    continue
+
+                # Try standard close tag
                 if remaining.startswith(_CLOSE_TAG):
                     self._in_thinking = False
                     i += _CLOSE_LEN
@@ -154,7 +201,6 @@ class ThinkingParser:
                 i += 1
 
         return ("".join(thinking_out), "".join(content_out))
-
     def finish(self) -> Tuple[str, str]:
         """Flush any remaining buffered content.
 
@@ -181,22 +227,24 @@ class ThinkingParser:
     def _could_be_tag(text: str) -> bool:
         """Check if text could be the start of a <think> or </think> tag.
 
-        Returns True if text is a proper prefix of either tag but not
-        yet a complete match.
+        Returns True if text is a proper prefix of any known thinking tag
+        (standard or Gemma 4) but not yet a complete match.
         """
         length = len(text)
-        if length >= _CLOSE_LEN:
-            # Long enough to determine - not a partial tag
-            return False
 
-        # Check against both tags
-        if _OPEN_TAG[:length] == text:
+        # Check standard tags
+        if length < _OPEN_LEN and _OPEN_TAG[:length] == text:
             return True
-        if _CLOSE_TAG[:length] == text:
+        if length < _CLOSE_LEN and _CLOSE_TAG[:length] == text:
+            return True
+
+        # Check Gemma 4 tags
+        if length < _GEMMA4_THINK_START_LEN and _GEMMA4_THINK_START[:length] == text:
+            return True
+        if length < _GEMMA4_THINK_END_LEN and _GEMMA4_THINK_END[:length] == text:
             return True
 
         return False
-
 
 class ThinkingBudgetProcessor:
     """Logits processor that enforces a thinking token budget.
