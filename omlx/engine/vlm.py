@@ -358,34 +358,57 @@ class VLMBatchedEngine(BaseEngine):
         tool_parser, etc). We reuse mlx-lm's _infer_tool_parser() to detect the
         parser type from the chat template, then set the attributes directly on
         the wrapper instance so parse_tool_calls() can use native tool parsing.
+
+        For VLM-specific models like Gemma 4 we use the the mlx-vlm parser.
         """
-        try:
-            from mlx_lm.tokenizer_utils import _infer_tool_parser
-        except ImportError:
-            return
+        # Try VLM-specific parsers first based on model type
+        parser_type = None
+        tool_call_start = None
+        tool_call_end = None
+        parse_tool_call = None
 
-        chat_template = getattr(tokenizer, "chat_template", None)
-        if not chat_template:
-            return
+        # Check for Gemma 4 (VLM-specific parser from mlx-vlm)
+        if self.model_type == "gemma4":
+            try:
+                from mlx_vlm.tool_parsers.gemma4 import (
+                    tool_call_start,
+                    tool_call_end,
+                    parse_tool_call,
+                )
+                parser_type = "gemma4"
+            except ImportError:
+                logger.warning("Gemma 4 tool parser not available in mlx-vlm")
+                return
 
-        tool_parser_type = _infer_tool_parser(chat_template)
-        if tool_parser_type is None:
-            return
+        # Fall back to mlx-lm detection for other models
+        if parser_type is None:
+            try:
+                from mlx_lm.tokenizer_utils import _infer_tool_parser
+            except ImportError:
+                return
 
-        try:
-            import importlib
+            chat_template = getattr(tokenizer, "chat_template", None)
+            if not chat_template:
+                return
 
-            tool_module = importlib.import_module(
-                f"mlx_lm.tool_parsers.{tool_parser_type}"
-            )
-        except ImportError:
-            logger.warning(
-                f"VLM tool parser module not found: {tool_parser_type}"
-            )
-            return
+            parser_type = _infer_tool_parser(chat_template)
+            if parser_type is None:
+                return
 
-        tool_call_start = tool_module.tool_call_start
-        tool_call_end = tool_module.tool_call_end
+            try:
+                import importlib
+                tool_module = importlib.import_module(
+                    f"mlx_lm.tool_parsers.{parser_type}"
+                )
+            except ImportError:
+                logger.warning(
+                    f"VLM tool parser module not found: {parser_type}"
+                )
+                return
+
+            tool_call_start = tool_module.tool_call_start
+            tool_call_end = tool_module.tool_call_end
+            parse_tool_call = tool_module.parse_tool_call
 
         # Validate tokens exist in vocab (same check as mlx-lm)
         vocab = tokenizer.get_vocab()
@@ -400,10 +423,9 @@ class VLMBatchedEngine(BaseEngine):
         tokenizer.has_tool_calling = True
         tokenizer.tool_call_start = tool_call_start
         tokenizer.tool_call_end = tool_call_end
-        tokenizer.tool_parser = tool_module.parse_tool_call
+        tokenizer.tool_parser = parse_tool_call
 
-        logger.info(f"VLM tool calling enabled: parser={tool_parser_type}")
-
+        logger.info(f"VLM tool calling enabled: parser={parser_type}")
     @staticmethod
     def _count_content_parts(content: Any, part_types: set[str]) -> int:
         """Count multimodal parts in list content by type."""
