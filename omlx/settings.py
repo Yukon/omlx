@@ -1199,6 +1199,7 @@ class GlobalSettings:
             hot_cache_only=self.cache.hot_cache_only,
             paged_ssd_cache_max_size=self.cache.get_ssd_cache_max_size_bytes(self.base_path),
             hot_cache_max_size=self.cache.get_hot_cache_max_size_bytes(),
+            penalty_window=self.sampling.penalty_window,
         )
 
     def to_dict(self) -> dict[str, Any]:
