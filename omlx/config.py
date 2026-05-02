@@ -109,6 +109,7 @@ class PagedSSDCacheConfig:
     cache_dir: Optional[Path] = None
     max_size: str = "100GB"
     hot_cache_max_size: str = "0"  # "0" = disabled, e.g. "8GB"
+    eviction_idle_timeout: int = 30  # Minutes, 0 = disabled (blocks idle >30min skipped on eviction)
 
     @property
     def max_size_bytes(self) -> int:
@@ -179,6 +180,9 @@ class OMLXConfig:
 
         # Paged SSD cache settings
         config.paged_ssd_cache.hot_cache_only = os.getenv("OMLX_HOT_CACHE_ONLY", "false").lower() == "true"
+        config.paged_ssd_cache.eviction_idle_timeout = int(
+            os.getenv("OMLX_EVICTION_IDLE_TIMEOUT", str(config.paged_ssd_cache.eviction_idle_timeout))
+        )
         paged_ssd_dir = os.getenv("OMLX_PAGED_SSD_CACHE_DIR")
         if paged_ssd_dir:
             config.paged_ssd_cache.enabled = True
@@ -246,6 +250,8 @@ class OMLXConfig:
             config.paged_ssd_cache.cache_dir = Path(args.paged_ssd_cache_dir)
         if hasattr(args, "paged_ssd_cache_max_size") and args.paged_ssd_cache_max_size:
             config.paged_ssd_cache.max_size = args.paged_ssd_cache_max_size
+        if hasattr(args, "eviction_idle_timeout") and args.eviction_idle_timeout is not None:
+            config.paged_ssd_cache.eviction_idle_timeout = args.eviction_idle_timeout
 
         if hasattr(args, "mcp_config") and args.mcp_config:
             config.mcp.enabled = True

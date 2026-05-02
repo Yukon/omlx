@@ -346,6 +346,7 @@ class SchedulerConfig:
     hot_cache_only: bool = False
     paged_ssd_cache_max_size: int = 100 * 1024 * 1024 * 1024  # 100GB default
     hot_cache_max_size: int = 0  # In-memory hot cache size in bytes (0 = disabled)
+    eviction_idle_timeout: int = 30  # Minutes, 0 = disabled (blocks idle >30min skipped on eviction to save SSD wear)
 
     # Model identification (for cache isolation between different models)
     model_name: str = ""  # OpenAI API model name (e.g., "mlx-community/Llama-3.2-3B")
@@ -562,6 +563,7 @@ class Scheduler:
                 max_blocks=max_blocks,
                 model_name=self.config.model_name,
                 initial_blocks=self.config.initial_cache_blocks,
+                eviction_idle_timeout=self.config.eviction_idle_timeout,
             )
             self.block_aware_cache = BlockAwarePrefixCache(
                 model=model,

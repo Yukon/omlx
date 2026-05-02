@@ -586,6 +586,15 @@ Example directory structure:
         help="Maximum in-memory hot cache size (e.g., '8GB', '4GB'). Default: 0 (disabled)",
     )
     serve_parser.add_argument(
+        "--eviction-idle-timeout",
+        type=int,
+        default=None,
+        help="Idle timeout in minutes before evicted blocks skip SSD write. "
+        "Blocks idle longer than this are evicted without SSD write, reducing "
+        "processing overhead and extending SSD endurance. Set to 0 to disable. "
+        "Default: 30",
+    )
+    serve_parser.add_argument(
         "--no-cache",
         action="store_true",
         help="Disable oMLX paged SSD cache. mlx-lm BatchGenerator still manages KV states internally.",

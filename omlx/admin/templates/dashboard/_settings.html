@@ -566,6 +566,23 @@
                                     <input type="text" x-model="globalSettings.cache.ssd_cache_dir"
                                            class="w-full sm:w-64 px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent transition-all font-mono text-xs">
                                 </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-4">
+                                    <div>
+                                        <div class="flex items-center gap-2">
+                                            <label class="text-sm text-neutral-700">{{ t('settings.cache.eviction_idle_timeout') }}</label>
+                                            <span class="px-1.5 py-0.5 text-[9px] font-medium rounded-full bg-amber-50 text-amber-600 border border-amber-200">
+                                                {{ t('settings.global.restart_badge') }}
+                                            </span>
+                                        </div>
+                                        <p class="text-xs text-neutral-400 mt-0.5">{{ t('settings.cache.eviction_idle_timeout_description') }}</p>
+                                    </div>
+                                    <div class="flex items-center gap-3">
+                                        <input type="number" x-model.number="globalSettings.cache.eviction_idle_timeout"
+                                               min="0" step="5"
+                                               class="w-24 px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent transition-all">
+                                        <span class="text-xs text-neutral-400">{{ t('settings.cache.minutes') }}</span>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 

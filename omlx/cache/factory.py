@@ -45,6 +45,7 @@ class CacheConfig:
     max_paged_ssd_cache_size: int = 100 * 1024 * 1024 * 1024  # 100GB
     max_kv_cache_memory: Optional[int] = None
     model_name: str = ""
+    eviction_idle_timeout: int = 0  # Minutes, 0 = disabled
 
 
 class CacheFactory:
@@ -94,6 +95,7 @@ class CacheFactory:
             enable_caching=True,
             model_name=config.model_name,
             initial_blocks=config.initial_blocks,
+            eviction_idle_timeout=config.eviction_idle_timeout,
         )
 
     @staticmethod

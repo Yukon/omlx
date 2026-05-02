@@ -72,6 +72,7 @@ class TieredCacheManager:
         block_size: int,
         model: Any = None,
         hot_cache_max_bytes: int = 0,
+        eviction_idle_timeout: int = 0,
     ) -> Optional["TieredCacheManager"]:
         """
         Create a TieredCacheManager from configuration.
@@ -84,6 +85,10 @@ class TieredCacheManager:
             block_size: Tokens per block.
             model: The model (for extracting KV cache dimensions).
             hot_cache_max_bytes: Maximum in-memory hot cache size (0 = disabled).
+            eviction_idle_timeout: Idle timeout in minutes for blocks before they're
+                considered expired on eviction. If a block hasn't been accessed in
+                this time, it will be evicted without writing to SSD. Set to 0 to
+                disable expiration check (default: 0, disabled).
 
         Returns:
             TieredCacheManager instance or None if tiered caching is disabled.
@@ -118,6 +123,10 @@ class TieredCacheManager:
                 max_size_bytes=paged_ssd_cache_max_size,
                 hot_cache_max_bytes=hot_cache_max_bytes,
             )
+
+            # Configure eviction idle timeout on the paged cache manager
+            if eviction_idle_timeout > 0:
+                paged_cache_manager.eviction_idle_timeout = eviction_idle_timeout
 
             # Connect paged SSD cache manager to PagedCacheManager
             paged_cache_manager.set_paged_ssd_cache_manager(paged_ssd_cache_manager)
@@ -217,6 +226,9 @@ class TieredCacheManager:
         block metadata from the index. The data remains on paged SSD and can
         be re-discovered if the same token sequence is requested.
 
+        If eviction_idle_timeout is configured, expired blocks will be skipped
+        for SSD write to avoid processing overhead.
+
         Args:
             bytes_to_free: Target bytes to free (used for estimation).
 
@@ -242,11 +254,24 @@ class TieredCacheManager:
             return 0
 
         evicted_count = 0
+        expired_count = 0
 
         for block in evictable:
+            # Check if block is expired (if timeout is configured)
+            skip_ssd = False
+            if self.paged_cache_manager.eviction_idle_timeout > 0:
+                skip_ssd = self.paged_cache_manager.is_block_expired(block.block_id)
+                if skip_ssd:
+                    expired_count += 1
+                    logger.debug(
+                        f"Block {block.block_id} is expired, skipping SSD write"
+                    )
+
             # In paged SSD-only mode, data is already on paged SSD
             # Just evict the block metadata
-            if self.paged_cache_manager.evict_block_permanently(block.block_id):
+            if self.paged_cache_manager.evict_block_permanently(
+                block.block_id, skip_ssd_write=skip_ssd
+            ):
                 evicted_count += 1
 
         # Estimate bytes freed based on block count
@@ -255,10 +280,17 @@ class TieredCacheManager:
         )
 
         if evicted_count > 0:
-            logger.info(
-                f"Evicted {evicted_count} blocks from index "
-                f"(data preserved on paged SSD, ~{format_bytes(estimated_freed)} metadata freed)"
-            )
+            if expired_count > 0:
+                logger.info(
+                    f"Evicted {evicted_count} blocks from index "
+                    f"({expired_count} expired, skipped SSD write, "
+                    f"~{format_bytes(estimated_freed)} metadata freed)"
+                )
+            else:
+                logger.info(
+                    f"Evicted {evicted_count} blocks from index "
+                    f"(data preserved on paged SSD, ~{format_bytes(estimated_freed)} metadata freed)"
+                )
 
         return estimated_freed
 

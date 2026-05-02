@@ -246,6 +246,7 @@ class CacheSettings:
     ssd_cache_max_size: str = "auto"  # "auto" means 10% of SSD capacity
     hot_cache_max_size: str = "0"  # "0" = disabled, e.g. "8GB"
     initial_cache_blocks: int = 256  # Starting blocks (grows dynamically)
+    eviction_idle_timeout: int = 30  # Minutes, 0 = disabled (blocks idle >30min skipped on eviction)
 
     def get_ssd_cache_dir(self, base_path: Path) -> Path:
         """
@@ -289,6 +290,7 @@ class CacheSettings:
             "ssd_cache_max_size": self.ssd_cache_max_size,
             "hot_cache_max_size": self.hot_cache_max_size,
             "initial_cache_blocks": self.initial_cache_blocks,
+            "eviction_idle_timeout": self.eviction_idle_timeout,
         }
 
     @classmethod
@@ -301,6 +303,7 @@ class CacheSettings:
             ssd_cache_max_size=data.get("ssd_cache_max_size", "auto"),
             hot_cache_max_size=data.get("hot_cache_max_size", "0"),
             initial_cache_blocks=data.get("initial_cache_blocks", 256),
+            eviction_idle_timeout=data.get("eviction_idle_timeout", 30),
         )
 
 
@@ -937,6 +940,11 @@ class GlobalSettings:
             and args.initial_cache_blocks is not None
         ):
             self.cache.initial_cache_blocks = args.initial_cache_blocks
+        if (
+            hasattr(args, "eviction_idle_timeout")
+            and args.eviction_idle_timeout is not None
+        ):
+            self.cache.eviction_idle_timeout = args.eviction_idle_timeout
 
         # Auth settings
         if hasattr(args, "api_key") and args.api_key is not None:
@@ -1112,6 +1120,11 @@ class GlobalSettings:
                 f"Invalid initial_cache_blocks: "
                 f"{self.cache.initial_cache_blocks} (must be > 0)"
             )
+        if self.cache.eviction_idle_timeout < 0:
+            errors.append(
+                f"Invalid eviction_idle_timeout: "
+                f"{self.cache.eviction_idle_timeout} (must be >= 0)"
+            )
 
         # Sampling validation
         if self.sampling.max_tokens <= 0:
@@ -1203,6 +1216,7 @@ class GlobalSettings:
             hot_cache_only=self.cache.hot_cache_only,
             paged_ssd_cache_max_size=self.cache.get_ssd_cache_max_size_bytes(self.base_path),
             hot_cache_max_size=self.cache.get_hot_cache_max_size_bytes(),
+            eviction_idle_timeout=self.cache.eviction_idle_timeout,
         )
 
     def to_dict(self) -> dict[str, Any]:

@@ -209,6 +209,7 @@ class GlobalSettingsRequest(BaseModel):
     hot_cache_only: Optional[bool] = None
     hot_cache_max_size: Optional[str] = None  # "0" = disabled, "8GB", etc.
     initial_cache_blocks: Optional[int] = None  # Starting blocks (requires restart)
+    eviction_idle_timeout: Optional[int] = None  # Minutes, 0 = disabled (blocks idle >timeout skipped on eviction)
 
     # MCP settings
     mcp_config: Optional[str] = None
@@ -699,12 +700,21 @@ async def _apply_cache_settings_runtime(
     ssd_cache_max_size: Optional[str],
     global_settings,
     hot_cache_max_size: Optional[str] = None,
+    eviction_idle_timeout: Optional[int] = None,
 ) -> tuple[bool, str]:
     """
     Apply cache settings at runtime.
 
     Updates the scheduler_config and unloads all models so they
     will use the new cache settings when reloaded.
+
+    Args:
+        enabled: Whether cache is enabled
+        ssd_cache_dir: SSD cache directory path
+        ssd_cache_max_size: Max SSD cache size
+        global_settings: Global settings object
+        hot_cache_max_size: Hot cache max size in bytes
+        eviction_idle_timeout: Idle timeout in minutes for block expiration on eviction
 
     Returns:
         Tuple of (success, message)
@@ -765,6 +775,13 @@ async def _apply_cache_settings_runtime(
         pool._scheduler_config.hot_cache_max_size = (
             global_settings.cache.get_hot_cache_max_size_bytes()
         )
+
+    # Apply eviction idle timeout (minutes)
+    if eviction_idle_timeout is not None:
+        pool._scheduler_config.eviction_idle_timeout = eviction_idle_timeout
+        logger.info(f"Eviction idle timeout set to {eviction_idle_timeout} minutes")
+    elif hasattr(global_settings.cache, 'eviction_idle_timeout'):
+        pool._scheduler_config.eviction_idle_timeout = global_settings.cache.eviction_idle_timeout
 
     # Unload all loaded models so they use new config when reloaded
     loaded_models = pool.get_loaded_model_ids()
@@ -2542,6 +2559,7 @@ async def get_global_settings(is_admin: bool = Depends(require_admin)):
             "hot_cache_only": global_settings.cache.hot_cache_only,
             "hot_cache_max_size": global_settings.cache.hot_cache_max_size,
             "initial_cache_blocks": global_settings.cache.initial_cache_blocks,
+            "eviction_idle_timeout": global_settings.cache.eviction_idle_timeout,
         },
         "mcp": {
             "config_path": global_settings.mcp.config_path,
@@ -2781,6 +2799,9 @@ async def update_global_settings(
         cache_changed = True
     if request.initial_cache_blocks is not None:
         global_settings.cache.initial_cache_blocks = request.initial_cache_blocks
+    if request.eviction_idle_timeout is not None:
+        global_settings.cache.eviction_idle_timeout = request.eviction_idle_timeout
+        cache_changed = True
 
     if cache_changed:
         success, msg = await _apply_cache_settings_runtime(
@@ -2789,6 +2810,7 @@ async def update_global_settings(
             request.ssd_cache_max_size,
             global_settings,
             hot_cache_max_size=request.hot_cache_max_size,
+            eviction_idle_timeout=request.eviction_idle_timeout,
         )
         if success:
             runtime_applied.append("cache")
