@@ -342,6 +342,7 @@ class TestCacheSettings:
             "ssd_cache_max_size": "50GB",
             "hot_cache_max_size": "0",
             "initial_cache_blocks": 256,
+            "eviction_idle_timeout": 30,
         }
 
     def test_from_dict(self):

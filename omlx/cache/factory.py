@@ -46,6 +46,7 @@ class CacheConfig:
     max_kv_cache_memory: Optional[int] = None
     model_name: str = ""
     eviction_idle_timeout: int = 0  # Minutes, 0 = disabled
+    hot_cache_max_bytes: int = 0  # 0 = disabled
 
 
 class CacheFactory:
@@ -125,6 +126,8 @@ class CacheFactory:
         return PagedSSDCacheManager(
             cache_dir=cache_dir,
             max_size_bytes=config.max_paged_ssd_cache_size,
+            hot_cache_max_bytes=config.hot_cache_max_bytes,
+            eviction_idle_timeout=config.eviction_idle_timeout,
         )
 
     @staticmethod

@@ -156,6 +156,7 @@ class CacheBlock:
 
     # Special flags
     is_null: bool = False
+    is_expired: bool = False  # Set when block idle > eviction_idle_timeout
 
     # Metadata
     token_count: int = 0
@@ -490,7 +491,7 @@ class PagedCacheManager(CacheManager):
     - Prefix sharing via chain-based hash deduplication
     - Copy-on-Write for efficient forking
     - O(1) LRU eviction using doubly linked list
-    - Time-based expiration on eviction (skip SSD write for stale entries)
+    - Time-based expiration on eviction (expire idle blocks, skip SSD writes when hot cache is enabled)
 
     Implements the CacheManager ABC interface for consistency with other
     cache implementations in oMLX.
@@ -502,11 +503,12 @@ class PagedCacheManager(CacheManager):
         model_name: Model name for cache isolation
         initial_blocks: Initial number of blocks to allocate (default: 256)
         eviction_idle_timeout: Idle timeout in minutes for blocks before they're
-            considered expired on eviction. If a block hasn't been accessed in
-            this time, it will be evicted without writing to SSD. This reduces
-            processing overhead and extends SSD endurance by avoiding writes for
-            stale data that won't be reused. Set to 0 to disable expiration
-            check (default: 0, disabled).
+            considered expired on eviction. This flag is set on expired blocks
+            via is_expired=True so downstream consumers (TieredCacheManager,
+            PagedSSDCacheManager) can skip SSD writes and clean up stale data.
+            Only meaningful when hot cache is enabled — in SSD-only mode, data
+            is written to SSD immediately in store_cache(). Set to 0 to disable
+            (default: 0, disabled).
     """
 
     def __init__(
@@ -664,6 +666,7 @@ class PagedCacheManager(CacheManager):
                 self._maybe_evict_cached_block(block)
 
             block.ref_count = 1
+            block.is_expired = False  # Reset for fresh allocation
             block.touch()
             self.allocated_blocks[block.block_id] = block
 
@@ -705,6 +708,7 @@ class PagedCacheManager(CacheManager):
                     self._maybe_evict_cached_block(block)
 
                 block.ref_count = 1
+                block.is_expired = False  # Reset for fresh allocation
                 block.touch()
                 self.allocated_blocks[block.block_id] = block
 
@@ -1279,9 +1283,15 @@ class PagedCacheManager(CacheManager):
         With the doubly linked list, LRU blocks are already at the front
         of the free queue. We just need to pop from front.
 
-        If eviction_idle_timeout is configured, blocks that haven't been
-        accessed in the timeout period will be marked as expired and
-        won't be written to SSD (saving processing overhead).
+        This method manages block metadata only (no SSD I/O). SSD data
+        cleanup for expired blocks is handled by TieredCacheManager and
+        PagedSSDCacheManager.
+
+        If eviction_idle_timeout is configured (and hot cache is enabled),
+        blocks that haven't been accessed in the timeout period are marked
+        as expired. Expired metadata is still evicted, but downstream
+        consumers (TieredCacheManager, PagedSSDCacheManager) use the
+        is_expired flag to skip SSD writes and delete stale SSD data.
         """
         with self._lock:
             evicted = 0
@@ -1293,24 +1303,24 @@ class PagedCacheManager(CacheManager):
                 try:
                     block = self.free_block_queue.popleft()
 
-                    # Check if block is expired (idle timeout)
-                    is_expired = False
+                    # Mark block as expired if idle longer than the timeout.
+                    # The is_expired flag is used by downstream consumers
+                    # (TieredCacheManager, PagedSSDCacheManager) to skip
+                    # SSD writes and clean up stale SSD data.
+                    block.is_expired = False  # Reset before re-evaluation
                     if self.eviction_idle_timeout > 0:
                         idle_time = current_time - block.last_access
                         timeout_seconds = self.eviction_idle_timeout * 60
                         if idle_time > timeout_seconds:
-                            is_expired = True
+                            block.is_expired = True
                             expired += 1
                             logger.debug(
                                 f"Block {block.block_id} expired (idle={idle_time:.1f}s > "
-                                f"timeout={timeout_seconds}s), "
-                                f"skipping SSD write"
+                                f"timeout={timeout_seconds}s)"
                             )
 
                     self._maybe_evict_cached_block(block)
 
-                    # If expired, don't write to SSD - just return to free queue
-                    # If not expired, the connected SSD cache manager will handle writing
                     # Put back at end (now available for allocation)
                     self.free_block_queue.append(block)
                     evicted += 1
@@ -1321,7 +1331,7 @@ class PagedCacheManager(CacheManager):
                 if expired > 0:
                     logger.info(
                         f"Evicted {evicted} LRU blocks from cache "
-                        f"({expired} expired, skipped SSD write)"
+                        f"({expired} expired, flagged for SSD cleanup)"
                     )
                 else:
                     logger.info(f"Evicted {evicted} LRU blocks from cache")
@@ -1489,12 +1499,11 @@ class PagedCacheManager(CacheManager):
                 # Block must not be null and have ref_count == 0
                 if not current.is_null and current.ref_count == 0:
                     # Mark expired blocks for later filtering
+                    current.is_expired = False  # Reset before re-evaluation
                     if self.eviction_idle_timeout > 0:
                         idle_time = current_time - current.last_access
                         if idle_time > timeout_seconds:
-                            # Mark as expired by setting a special flag
-                            # We'll use token_count = -1 to indicate expired
-                            current.token_count = -1  # Mark as expired
+                            current.is_expired = True  # Proper expiration flag
                     candidates.append(current)
                 current = current.next_free_block
 
@@ -1575,23 +1584,18 @@ class PagedCacheManager(CacheManager):
             )
             return True
 
-    def evict_block_permanently(self, block_id: int, skip_ssd_write: bool = False) -> bool:
+    def evict_block_permanently(self, block_id: int) -> bool:
         """
         Evict a block permanently (removes from metadata index).
 
-        This method:
-        - Removes from hash cache (block won't be found in cache lookups)
-        - Returns block to free queue (can be reallocated)
-        - Removes from allocated_blocks
+        This method manages metadata only — no SSD I/O.
 
-        Note: In paged SSD-only mode, the data remains on paged SSD and may be deleted
-        by PagedSSDCacheManager's LRU eviction if needed.
+        SSD data cleanup for expired blocks is handled by
+        TieredCacheManager.evict_blocks_to_cold() which checks
+        block.is_expired and calls PagedSSDCacheManager.delete_block().
 
         Args:
             block_id: Block ID to evict.
-            skip_ssd_write: If True, indicates this block should not be written to SSD
-                (e.g., because it's expired). The connected SSD cache manager will use
-                this to skip the save operation.
 
         Returns:
             True if successful, False if block not found or in use.
@@ -1616,9 +1620,11 @@ class PagedCacheManager(CacheManager):
             if block.block_hash is not None:
                 self.cached_block_hash_to_block.pop(block.block_hash, block.block_id)
 
-            # Clear metadata
+            # Clear metadata (but preserve is_expired for downstream consumers)
+            is_expired = getattr(block, 'is_expired', False)
             block.reset_hash()
             block.token_count = 0
+            block.is_expired = False  # Reset for reuse
 
             # Remove from allocated_blocks and add to free queue
             if block_id in self.allocated_blocks:
@@ -1629,7 +1635,7 @@ class PagedCacheManager(CacheManager):
             self.stats.free_blocks += 1
             self.stats.evictions += 1
 
-            reason = " (expired, SSD write skipped)" if skip_ssd_write else ""
+            reason = " (expired)" if is_expired else ""
             logger.debug(f"Permanently evicted block {block_id}{reason}")
             return True
 

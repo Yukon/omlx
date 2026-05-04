@@ -198,6 +198,7 @@ class PagedSSDCacheStats(BaseCacheStats):
     hot_cache_hits: int = 0
     hot_cache_evictions: int = 0
     hot_cache_promotions: int = 0
+    hot_cache_expired_evictions: int = 0  # Entries dropped (not written to SSD) due to idle timeout
 
     @property
     def save_rate(self) -> float:

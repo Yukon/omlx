@@ -613,6 +613,7 @@ class PagedSSDCacheManager(CacheManager):
         max_size_bytes: int,
         hot_cache_max_bytes: int = 0,
         hot_cache_only: bool = False,
+        eviction_idle_timeout: int = 0,
     ):
         """
         Initialize the SSD cache manager.
@@ -625,6 +626,11 @@ class PagedSSDCacheManager(CacheManager):
             hot_cache_only: When True, skip directory init and writer thread.
                 All data is stored exclusively in the hot cache (RAM only).
                 No SSD I/O is performed.
+            eviction_idle_timeout: Idle timeout in minutes for hot cache entries
+                before they're considered expired. Entries idle longer than this
+                are dropped (not written to SSD) when evicted from hot cache.
+                Set to 0 to disable (always write to SSD on eviction). Only
+                meaningful when hot cache is enabled.
         """
         self._cache_dir = cache_dir
         self._max_size = max_size_bytes
@@ -648,7 +654,11 @@ class PagedSSDCacheManager(CacheManager):
             "hot_cache_hits": 0,
             "hot_cache_evictions": 0,
             "hot_cache_promotions": 0,
+            "hot_cache_expired_evictions": 0,
         }
+
+        # --- Eviction idle timeout (minutes, 0 = disabled) ---
+        self._eviction_idle_timeout = eviction_idle_timeout  # minutes, 0 = always write to SSD
 
         # --- Hot cache (in-memory raw-bytes tier) ---
         self._hot_cache_max_bytes = hot_cache_max_bytes
@@ -718,10 +728,14 @@ class PagedSSDCacheManager(CacheManager):
     def _hot_cache_put(self, block_hash: bytes, entry: dict) -> None:
         """Add entry to hot cache, evicting LRU entries if capacity exceeded.
 
-        Evicted entries are flushed to SSD via the background writer thread.
+        Evicted entries are flushed to SSD via the background writer thread,
+        unless they have exceeded the eviction idle timeout, in which case they
+        are dropped (not written to SSD) to reduce processing overhead and
+        SSD wear on stale data.
         """
         entry_size = self._hot_cache_entry_size(entry)
         evicted_entries: list = []
+        expired_entries: list = []  # Entries too old to bother writing to SSD
         with self._hot_cache_lock:
             # Remove old entry if updating
             if block_hash in self._hot_cache:
@@ -736,14 +750,39 @@ class PagedSSDCacheManager(CacheManager):
                 evicted_hash, evicted = self._hot_cache.popitem(last=False)
                 self._hot_cache_total_bytes -= self._hot_cache_entry_size(evicted)
                 self._stats["hot_cache_evictions"] += 1
-                evicted_entries.append((evicted_hash, evicted))
+
+                # Check if the evicted entry is expired (idle too long).
+                # Expired entries are dropped rather than written to SSD,
+                # reducing processing overhead and SSD wear for stale data
+                # that is unlikely to be reused.
+                is_expired = False
+                if self._eviction_idle_timeout > 0:
+                    blk_meta = evicted.get('block_metadata')
+                    if blk_meta is not None:
+                        evicted_age = time.time() - blk_meta.created_at
+                        timeout_seconds = self._eviction_idle_timeout * 60
+                        if evicted_age > timeout_seconds:
+                            is_expired = True
+                            self._stats["hot_cache_expired_evictions"] += 1
+                            logger.debug(
+                                f"Expired hot cache entry dropped (no SSD write): "
+                                f"{evicted_hash.hex()[:16]}, "
+                                f"age={evicted_age:.1f}s > timeout={timeout_seconds}s"
+                            )
+
+                if is_expired:
+                    expired_entries.append(evicted_hash)
+                else:
+                    evicted_entries.append((evicted_hash, evicted))
 
             self._hot_cache[block_hash] = entry
             self._hot_cache_total_bytes += entry_size
 
-        # Flush evicted entries to SSD outside the hot cache lock
+        # Flush non-expired evicted entries to SSD outside the hot cache lock
         for evicted_hash, evicted in evicted_entries:
             self._enqueue_ssd_write(evicted_hash, evicted)
+
+        # Expired entries are simply dropped — no SSD write needed
 
     def _enqueue_ssd_write(self, block_hash: bytes, entry: dict) -> bool:
         """Enqueue a hot cache entry for SSD background write.
@@ -2071,6 +2110,7 @@ class PagedSSDCacheManager(CacheManager):
                 hot_cache_hits=self._stats["hot_cache_hits"],
                 hot_cache_evictions=self._stats["hot_cache_evictions"],
                 hot_cache_promotions=self._stats["hot_cache_promotions"],
+                hot_cache_expired_evictions=self._stats["hot_cache_expired_evictions"],
             )
 
     def get_stats_for_model(self, model_name: str) -> PagedSSDCacheStats:
@@ -2129,6 +2169,7 @@ class PagedSSDCacheManager(CacheManager):
                 hot_cache_hits=self._stats["hot_cache_hits"],
                 hot_cache_evictions=self._stats["hot_cache_evictions"],
                 hot_cache_promotions=self._stats["hot_cache_promotions"],
+                hot_cache_expired_evictions=self._stats["hot_cache_expired_evictions"],
             )
 
     def get_stats_dict(self) -> dict[str, Any]:
@@ -2170,19 +2211,33 @@ class PagedSSDCacheManager(CacheManager):
         logger.info("Shutting down PagedSSDCacheManager...")
 
         # Flush hot cache entries to SSD before shutdown
+        # Skip expired entries (they would be stale and not reused)
         if self._hot_cache_enabled:
             with self._hot_cache_lock:
                 entries_to_flush = list(self._hot_cache.items())
             flushed = 0
+            expired_dropped = 0
             for block_hash, entry in entries_to_flush:
                 # Skip blocks already written to SSD
                 blk_meta = entry.get("block_metadata")
                 if blk_meta and blk_meta.file_path.exists():
                     continue
+
+                # Skip expired entries — stale data not worth persisting
+                if self._eviction_idle_timeout > 0 and blk_meta is not None:
+                    entry_age = time.time() - blk_meta.created_at
+                    if entry_age > self._eviction_idle_timeout * 60:
+                        expired_dropped += 1
+                        continue
+
                 if self._enqueue_ssd_write(block_hash, entry):
                     flushed += 1
             if flushed:
                 logger.info(f"Flushed {flushed} hot cache blocks to SSD write queue")
+            if expired_dropped:
+                logger.info(
+                    f"Dropped {expired_dropped} expired hot cache blocks on shutdown"
+                )
 
         # Signal writer thread to stop (after processing remaining queue)
         if self._writer_thread:
